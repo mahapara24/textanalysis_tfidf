@@ -1,0 +1,272 @@
+"""
+Unstructured Text Analysis & Automated Triage with TF-IDF
+Course: Data Science Tools & Techniques
+
+Instructions:
+Complete each TODO section below. You can run this file interactively cell-by-cell
+in VS Code / PyCharm / Spyder (using the `# %%` markers) or directly via terminal:
+    python lab15_starter.py
+"""
+
+
+# ## Setup & Dataset Loading
+
+# %%
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")  # so it runs fine without a display
+import matplotlib.pyplot as plt
+import seaborn as sns
+import nltk
+
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.cluster import KMeans
+from sklearn.decomposition import TruncatedSVD
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer, WordNetLemmatizer
+
+# Download required NLTK resources quietly
+nltk.download("punkt", quiet=True)
+nltk.download("punkt_tab", quiet=True)
+nltk.download("stopwords", quiet=True)
+nltk.download("wordnet", quiet=True)
+
+# Load 4 real-world unstructured user discussion categories
+CATEGORIES = [
+    "sci.electronics",
+    "rec.autos",
+    "comp.sys.mac.hardware",
+    "sci.med",
+]
+
+print("Loading dataset...")
+raw_data = fetch_20newsgroups(
+    subset="all",
+    categories=CATEGORIES,
+    remove=("headers", "footers", "quotes"),
+)
+
+df = pd.DataFrame(
+    {
+        "text": raw_data.data,
+        "true_label": [raw_data.target_names[i] for i in raw_data.target],
+    }
+)
+
+# Keep posts with meaningful length (> 50 characters)
+df = df[df["text"].str.strip().str.len() > 50].reset_index(drop=True)
+print(f"Loaded {len(df)} unstructured user posts.\n")
+
+
+# %% [markdown]
+# ## Step 1: Text Cleaning, Tokenization & Normalization (10 mins)
+
+# %%
+sample_post = df["text"].iloc[0][:400]
+print("--- Raw Sample Post ---")
+print(sample_post)
+print("-" * 40)
+
+# TODO 1.1: Tokenize `sample_post` using `word_tokenize`, convert to lowercase,
+# and keep only alphabetic tokens (`w.isalpha()`).
+tokens = [w.lower() for w in word_tokenize(sample_post) if w.isalpha()]
+
+# TODO 1.2: Remove standard English stopwords using `stopwords.words('english')`.
+stop_words = set(stopwords.words("english"))
+filtered_tokens = [w for w in tokens if w not in stop_words]
+
+# TODO 1.3: Apply PorterStemmer and WordNetLemmatizer (with pos='v') to `filtered_tokens`.
+stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
+
+stemmed_tokens = [stemmer.stem(w) for w in filtered_tokens]
+lemmatized_tokens = [lemmatizer.lemmatize(w, pos="v") for w in filtered_tokens]
+
+if filtered_tokens is not None:
+    print("Filtered Tokens:  ", filtered_tokens[:12])
+    print("Stemmed Roots:    ", stemmed_tokens[:12])
+    print("Lemmatized Words: ", lemmatized_tokens[:12])
+
+
+# %% [markdown]
+# ## Step 2: Bag of Words vs. TF-IDF Feature Extraction (15 mins)
+
+# %%
+# TODO 2.1: Initialize CountVectorizer and TfidfVectorizer with:
+# stop_words='english', max_features=4000, min_df=5
+bow_vec = CountVectorizer(stop_words="english", max_features=4000, min_df=5)
+tfidf_vec = TfidfVectorizer(stop_words="english", max_features=4000, min_df=5)
+
+# TODO 2.2: Fit and transform `df['text']` to create `X_bow` and `X_tfidf`
+X_bow = bow_vec.fit_transform(df["text"])
+X_tfidf = tfidf_vec.fit_transform(df["text"])
+
+# TODO 2.3: Calculate matrix sparsity (% of zero entries in `X_tfidf`)
+if X_tfidf is not None:
+    total_elements = X_tfidf.shape[0] * X_tfidf.shape[1]
+    sparsity = 100.0 * (1.0 - (X_tfidf.nnz / total_elements))
+    print(f"\nTF-IDF Matrix Shape: {X_tfidf.shape} | Sparsity: {sparsity:.2f}%")
+
+    # TODO 2.4: Compute mean score per feature across documents and plot Top 10 TF-IDF words
+    tfidf_means = np.asarray(X_tfidf.mean(axis=0)).ravel()
+    top_idx = tfidf_means.argsort()[-10:]
+    top_words = tfidf_vec.get_feature_names_out()[top_idx]
+    top_scores = tfidf_means[top_idx]
+
+    plt.figure(figsize=(8, 4.5))
+    plt.barh(top_words, top_scores, color="teal")
+    plt.xlabel("Average TF-IDF Weight")
+    plt.title("Top 10 Most Influential Words (Baseline TF-IDF)")
+    plt.tight_layout()
+    plt.savefig("top_features.png", dpi=150)
+    plt.close()
+
+
+# %% [markdown]
+# ## Step 3: Automated Topic Discovery & Spatial Mapping (15 mins)
+
+# %%
+if X_tfidf is not None:
+    # TODO 3.1: Fit KMeans with `n_clusters=4, random_state=42, n_init=10` on `X_tfidf`
+    kmeans = KMeans(n_clusters=4, random_state=42, n_init=10)
+    df["cluster"] = kmeans.fit_predict(X_tfidf)
+
+    # TODO 3.2: Print the top 8 defining TF-IDF words per cluster centroid
+    # and plot a seaborn heatmap (`cluster_heatmap.png`) of the top 5 words per cluster.
+    feature_names = tfidf_vec.get_feature_names_out()
+    centers = kmeans.cluster_centers_
+
+    print("\nTop 8 words per cluster:")
+    for i in range(4):
+        # sort words by importance in this cluster (highest first)
+        top_ids = centers[i].argsort()[::-1][:8]
+        words = [feature_names[j] for j in top_ids]
+        print("Cluster", i, ":", words)
+
+    # heatmap using top 5 words from each cluster
+    heat_words = []
+    for i in range(4):
+        top5 = centers[i].argsort()[::-1][:5]
+        for j in top5:
+            w = feature_names[j]
+            if w not in heat_words:
+                heat_words.append(w)
+
+    heat_matrix = []
+    for i in range(4):
+        row = []
+        for w in heat_words:
+            # find the column index of this word
+            idx = list(feature_names).index(w)
+            row.append(centers[i][idx])
+        heat_matrix.append(row)
+
+    heat_df = pd.DataFrame(heat_matrix, index=["Cluster 0", "Cluster 1", "Cluster 2", "Cluster 3"], columns=heat_words)
+
+    plt.figure(figsize=(10, 4))
+    sns.heatmap(heat_df, cmap="YlOrRd")
+    plt.title("Cluster heatmap (top words)")
+    plt.tight_layout()
+    plt.savefig("cluster_heatmap.png", dpi=150)
+    plt.close()
+
+    # TODO 3.3: Project `X_tfidf` to 2 dimensions using `TruncatedSVD(n_components=2, random_state=42)`
+    # and save a 2D scatter plot (`spatial_mapping.png`) colored by `df["cluster"]`.
+    svd = TruncatedSVD(n_components=2, random_state=42)
+    coords = svd.fit_transform(X_tfidf)
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(coords[:, 0], coords[:, 1], c=df["cluster"], cmap="tab10", alpha=0.5, s=10)
+    plt.xlabel("SVD 1")
+    plt.ylabel("SVD 2")
+    plt.title("2D spatial mapping of clusters")
+    plt.tight_layout()
+    plt.savefig("spatial_mapping.png", dpi=150)
+    plt.close()
+
+
+# %% [markdown]
+# ## Step 4: Problem-Solving Diagnostics (20 mins)
+
+# %%
+# Challenge 1 (Noise Filtering):
+# TODO 4.1: Build a cleaner `TfidfVectorizer` using `token_pattern=r'\b[a-zA-Z]{3,}\b'`,
+# `max_df=0.5`, and custom conversational stopwords (e.g., 'know', 'like', 'just', 'think', 'does', 'use', 'thanks').
+# Re-fit KMeans and compare cluster keywords!
+extra_stops = ["know", "like", "just", "think", "does", "use", "thanks"]
+my_stops = list(stop_words) + extra_stops
+
+clean_vec = TfidfVectorizer(
+    stop_words=my_stops,
+    max_features=4000,
+    min_df=5,
+    max_df=0.5,
+    token_pattern=r"\b[a-zA-Z]{3,}\b",
+)
+X_clean = clean_vec.fit_transform(df["text"])
+km_clean = KMeans(n_clusters=4, random_state=42, n_init=10)
+df["cluster_clean"] = km_clean.fit_predict(X_clean)
+
+clean_names = clean_vec.get_feature_names_out()
+print("\nAfter cleaning - top words per cluster:")
+for i in range(4):
+    top_ids = km_clean.cluster_centers_[i].argsort()[::-1][:8]
+    print("Cluster", i, ":", [clean_names[j] for j in top_ids])
+
+
+# Challenge 2 (Hardware Overlap Diagnosis):
+# TODO 4.2: Run `pd.crosstab(df['true_label'], df['cluster'])` and inspect overlapping categories.
+print("\nCrosstab (true label vs cluster):")
+print(pd.crosstab(df["true_label"], df["cluster"]))
+
+# try bigrams too
+bigram_vec = TfidfVectorizer(stop_words="english", max_features=4000, min_df=5, ngram_range=(1, 2))
+X_bi = bigram_vec.fit_transform(df["text"])
+km_bi = KMeans(n_clusters=4, random_state=42, n_init=10)
+df["cluster_bigram"] = km_bi.fit_predict(X_bi)
+print("\nCrosstab with bigrams:")
+print(pd.crosstab(df["true_label"], df["cluster_bigram"]))
+
+
+# Challenge 3 (Rant Length Bias):
+# TODO 4.3: Compare L2 vector norms (`np.linalg.norm`) of the longest and shortest posts in `X_bow` vs `X_tfidf`.
+lengths = df["text"].str.len()
+long_i = lengths.idxmax()
+short_i = lengths.idxmin()
+
+print("\nL2 norms:")
+print("BoW long:", np.linalg.norm(X_bow[long_i].toarray()), "short:", np.linalg.norm(X_bow[short_i].toarray()))
+print("TFIDF long:", np.linalg.norm(X_tfidf[long_i].toarray()), "short:", np.linalg.norm(X_tfidf[short_i].toarray()))
+
+
+# Challenge 4 (Stakeholder Explainability Audit):
+def explain_document(doc_id, matrix, vectorizer, top_n=5):
+    """
+    TODO 4.4: Return or print the top_n highest-weighted TF-IDF terms and their exact weights
+    for a single document `doc_id` (test with doc_id=412).
+    """
+    # get the tf-idf values for this one document
+    values = matrix[doc_id].toarray().flatten()
+    names = vectorizer.get_feature_names_out()
+
+    # only keep non-zero terms, then sort by weight
+    results = []
+    for i in range(len(values)):
+        if values[i] > 0:
+            results.append((names[i], float(values[i])))
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    results = results[:top_n]
+
+    print("Top terms for doc", doc_id, ":")
+    for term, weight in results:
+        print(term, weight)
+
+    return results
+
+
+# test on document 412
+explain_document(412, X_tfidf, tfidf_vec, top_n=5)
